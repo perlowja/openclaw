@@ -1,0 +1,42 @@
+{
+  "name": "@openclaw/tokenomics",
+  "version": "0.0.0-private",
+  "private": true,
+  "type": "module",
+  "description": "Tokenomics: host-neutral, local-first LLM spend accounting. Append-only spend ledger, public price-list catalog (OpenRouter/LiteLLM), period + by-model rollups, and a free-vs-paid usage report with an avoided-spend counterfactual. A thin per-host ingestion seam plugs into pi, Claude Code, Codex, Cursor, and OpenClaw; the core has no coding-tool dependency.",
+  "license": "Apache-2.0 OR MIT",
+  "bin": {
+    "tokenomics": "./src/cli.ts"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./src/index.ts"
+    },
+    "./ledger": {
+      "types": "./dist/ledger.d.ts",
+      "default": "./src/ledger.ts"
+    },
+    "./pricing": {
+      "types": "./dist/pricing.d.ts",
+      "default": "./src/pricing.ts"
+    },
+    "./report": {
+      "types": "./dist/report.d.ts",
+      "default": "./src/report.ts"
+    },
+    "./render": {
+      "types": "./dist/render.d.ts",
+      "default": "./src/render.ts"
+    },
+    "./host-adapter": {
+      "types": "./dist/host-adapter.d.ts",
+      "default": "./src/host-adapter.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  }
+}
