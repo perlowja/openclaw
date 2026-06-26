@@ -1,0 +1,28 @@
+{
+  // opencode -> OpenAI-compatible endpoint. Place in ~/.config/opencode/opencode.jsonc.
+  // The key is read from $LLM_API_KEY.
+  "$schema": "https://opencode.ai/config.json",
+  "model": "free/your-vendor/your-coder-model",
+  "small_model": "free/your-vendor/your-small-model",
+  "provider": {
+    "free": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Free OpenAI-compatible provider",
+      "options": {
+        "baseURL": "https://YOUR-OPENAI-COMPATIBLE-ENDPOINT/v1",
+        "apiKey": "{env:LLM_API_KEY}"
+      },
+      "models": {
+        "your-vendor/your-coder-model": { "name": "Coder" },
+        "your-vendor/your-small-model": { "name": "Small/fast" }
+      }
+    }
+  },
+  "enabled_providers": ["free"]
+
+  // NOTE: some opencode versions forward a per-model `options.extraBody` to the
+  // API as a literal parameter; if your gateway rejects unknown params it returns
+  // HTTP 400 ("Unsupported parameter(s): extraBody") and every model breaks. If
+  // you hit that, omit `extraBody` (or upgrade opencode to a build that spreads
+  // it into the request body).
+}

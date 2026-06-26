@@ -1,0 +1,9 @@
+{
+  "//": "Claude Code -> OpenAI/Anthropic-compatible endpoint. ANTHROPIC_BASE_URL must speak the Anthropic Messages API; for OpenAI-compatible providers put a translating gateway (e.g. a LiteLLM proxy) in front and point at it. Keep the key in $LLM_API_KEY.",
+  "env": {
+    "ANTHROPIC_BASE_URL": "https://YOUR-ANTHROPIC-COMPATIBLE-ENDPOINT/v1",
+    "ANTHROPIC_AUTH_TOKEN": "REPLACE_WITH_$LLM_API_KEY",
+    "ANTHROPIC_MODEL": "your-vendor/your-coder-model",
+    "ANTHROPIC_SMALL_FAST_MODEL": "your-vendor/your-small-model"
+  }
+}

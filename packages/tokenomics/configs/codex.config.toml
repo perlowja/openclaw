@@ -1,0 +1,11 @@
+# Codex -> OpenAI-compatible endpoint. Place in ~/.codex/config.toml.
+# The key is read from the env var named by `env_key` (export LLM_API_KEY=...).
+
+model = "your-vendor/your-coder-model"
+model_provider = "free"
+
+[model_providers.free]
+name = "Free OpenAI-compatible provider"
+base_url = "https://YOUR-OPENAI-COMPATIBLE-ENDPOINT/v1"
+env_key = "LLM_API_KEY"
+wire_api = "chat"
