@@ -7,7 +7,6 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { join } from "node:path";
 import {
   type DiagnosticEventMetadata,
-  type DiagnosticEventPayload,
   isInternalDiagnosticEventMetadata,
   type OpenClawPluginHttpRouteHandler,
   type OpenClawPluginService,
@@ -20,8 +19,6 @@ import { PricingCatalog } from "./pricing.js";
 import { renderReport } from "./render.js";
 import { buildReport, parseGran, type Gran, type Report } from "./report.js";
 
-type ModelUsageEvent = Extract<DiagnosticEventPayload, { type: "model.usage" }>;
-
 /** Structural subset of `model.usage` consumed by the mapper (test-friendly). */
 export interface ModelUsageLike {
   model?: string;
@@ -33,6 +30,24 @@ export interface ModelUsageLike {
     total?: number;
   };
   costUsd?: number;
+}
+
+// Forward-compatible view of the plugin SDK's `ctx.modelUsage` stream
+// (openclaw/openclaw#97892). Consumed structurally so this plugin builds
+// against SDK versions that predate the capability; when present at runtime it
+// delivers pre-filtered, already-trusted `model.usage` events (no metadata) and
+// is the preferred ingestion path — unlike `internalDiagnostics` it needs no
+// exporter-only grant. Swap to the real SDK type once #97892 ships in a release.
+type ModelUsageStream = {
+  onEvent: (listener: (event: ModelUsageLike) => void) => () => void;
+};
+
+function readModelUsageStream(ctx: OpenClawPluginServiceContext): ModelUsageStream | undefined {
+  const candidate = (ctx as { modelUsage?: unknown }).modelUsage;
+  if (candidate && typeof (candidate as ModelUsageStream).onEvent === "function") {
+    return candidate as ModelUsageStream;
+  }
+  return undefined;
 }
 
 const SUBDIR = "tokenomics";
@@ -136,7 +151,7 @@ export function createTokenomicsService() {
   // otherwise-silent capture gap visible (see below).
   let incompleteUsageEvents = 0;
 
-  function recordUsage(evt: ModelUsageEvent): void {
+  function recordUsage(evt: ModelUsageLike): void {
     if (!adapter) {
       return;
     }
@@ -277,10 +292,31 @@ export function createTokenomicsService() {
       const pricing = PricingCatalog.load(pricingPath, { logger: warn });
       adapter = new HostAdapter(ledgerPath, "openclaw", { pricing });
 
+      const recordSafely = (evt: ModelUsageLike) => {
+        try {
+          recordUsage(evt);
+        } catch (err) {
+          ctx.logger.error(`tokenomics: failed to record usage event: ${safeErrorMessage(err)}`);
+        }
+      };
+
+      // Preferred path: the public `ctx.modelUsage` stream (already filtered to
+      // trusted `model.usage`, no metadata), so spend recording works without
+      // the exporter-only `internalDiagnostics` grant. Falls back to
+      // `internalDiagnostics` on SDKs/deployments where the stream is absent.
+      const modelUsage = readModelUsageStream(ctx);
+      if (modelUsage) {
+        unsubscribe = modelUsage.onEvent(recordSafely);
+        ctx.logger.info(
+          `tokenomics: recording model spend to ${ledgerPath} (via model.usage stream)`,
+        );
+        return;
+      }
+
       const subscribe = ctx.internalDiagnostics?.onEvent;
       if (!subscribe) {
         ctx.logger.error(
-          "tokenomics: internal diagnostics capability unavailable; spend will not be recorded",
+          "tokenomics: no model-usage capability (ctx.modelUsage or internalDiagnostics) available; spend will not be recorded",
         );
         return;
       }
@@ -288,11 +324,7 @@ export function createTokenomicsService() {
         if (event.type !== "model.usage" || !shouldRecord(metadata)) {
           return;
         }
-        try {
-          recordUsage(event);
-        } catch (err) {
-          ctx.logger.error(`tokenomics: failed to record usage event: ${safeErrorMessage(err)}`);
-        }
+        recordSafely(event);
       });
       ctx.logger.info(`tokenomics: recording model spend to ${ledgerPath}`);
     },

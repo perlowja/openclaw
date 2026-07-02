@@ -35,13 +35,31 @@ openclaw plugins enable tokenomics
 
 ## How it works
 
-- A startup service subscribes to internal `model.usage` diagnostics and appends
-  a row (`ts_utc`, `provider`, `model`, `tokens_in`, `tokens_out`, `cost_usd`) to
+- A startup service subscribes to `model.usage` events and appends a row
+  (`ts_utc`, `provider`, `model`, `tokens_in`, `tokens_out`, `cost_usd`) to
   `<stateDir>/tokenomics/ledger.jsonl`.
 - Cost precedence: an explicit per-call `costUsd` from the host wins; otherwise a
   free classification yields `$0`; otherwise the optional pricing catalog
   (`<stateDir>/tokenomics/pricing.json`) estimates it. Unknown models stay `$0`
   so cost is never invented.
+
+### Usage capability (required to record spend)
+
+The service records spend only if the Gateway hands it a `model.usage` feed. It
+uses the first available of:
+
+1. **`ctx.modelUsage`** — the public plugin usage stream. This is the intended
+   path for a cross-provider spend plugin, but it must observe **all** providers'
+   usage. Provider-owner-scoped `modelUsage` (which only delivers usage for
+   providers the plugin itself owns) yields nothing here, because tokenomics owns
+   no provider. Tracking issue: openclaw/openclaw#97892.
+2. **`ctx.internalDiagnostics`** — only granted to bundled diagnostics exporters,
+   so it is available only when tokenomics ships bundled/trusted.
+
+If neither is present, the service logs
+`no model-usage capability … spend will not be recorded` and the ledger stays
+empty. See that issue for the "observe all model usage" grant this plugin needs
+on stock builds.
 
 ## Capturing streaming usage
 
@@ -116,6 +134,33 @@ model            calls     tokens        cost  tag
 frontier           420       2.7M      $12.40  paid
 local-8b          4780       5.4M       $0.00  free
 ```
+
+## Ask in chat (NLQ)
+
+The plugin also registers a read-only agent tool, `tokenomics_spend`, so you can
+just ask the agent in plain language:
+
+> **what is my API spend?**
+>
+> **how much did I spend this week, by model?**
+
+The agent calls `tokenomics_spend`, which reads the same ledger the HTTP report
+uses and returns a one-line summary plus the numbers (total billed cost, calls,
+tokens, free-vs-paid split, avoided spend, per-model breakdown, and the rendered
+report table). It answers only from local ledger data — no arguments are needed
+for a default 30-day summary.
+
+Optional arguments:
+
+| Argument      | Values                                                       | Default |
+| ------------- | ------------------------------------------------------------ | ------- |
+| `window`      | `today`, `last_24h`, `7d`, `30d`, `90d`, `this_month`, `all` | `30d`   |
+| `since`       | ISO date/datetime (overrides `window`)                       | —       |
+| `until`       | ISO date/datetime (overrides `window`)                       | —       |
+| `granularity` | `hour`, `day`, `week`, `month`                               | `day`   |
+
+Spend answers are only as complete as the ledger, which depends on the usage
+capability above.
 
 ## Optional override catalog
 

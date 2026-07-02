@@ -46,7 +46,9 @@ import {
 } from "./pricing.js";
 import { renderReport, shareBar } from "./render.js";
 import { buildReport, parseGran } from "./report.js";
+import type { Report } from "./report.js";
 import { createTokenomicsService, testApi, toUsageEvent } from "./service.js";
+import { createSpendTool, summarize, toReportParams } from "./spend-tool.js";
 
 let dir: string;
 
@@ -1539,5 +1541,174 @@ describe("FinOps observability (finops.ts)", () => {
     expect(rep.advisor.every((a) => a.potential_savings_usd >= 0)).toBe(true);
     // Burn forecast saw at least one day of data.
     expect(rep.forecast.sample_days).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe("modelUsage ingestion (ctx.modelUsage stream)", () => {
+  // Drives the preferred, unprivileged ingestion path (openclaw#97892): when
+  // `ctx.modelUsage` is present the service subscribes to it and needs no
+  // `internalDiagnostics` grant.
+  function startWithModelUsage() {
+    const svc = createTokenomicsService();
+    let emit: ((event: unknown) => void) | undefined;
+    const ctx = {
+      stateDir: dir,
+      logger: { info() {}, debug() {}, error() {}, warn() {} },
+      modelUsage: {
+        onEvent: (cb: (event: unknown) => void) => {
+          emit = cb;
+          return () => {};
+        },
+      },
+    };
+    svc.service.start(ctx as never);
+    if (!emit) {
+      throw new Error("service did not subscribe to modelUsage");
+    }
+    return { svc, emit };
+  }
+
+  it("records spend from the modelUsage stream without internalDiagnostics", () => {
+    const { svc, emit } = startWithModelUsage();
+    // The stream forwards already-trusted model.usage events with no metadata.
+    emit({
+      provider: "anthropic",
+      model: "opus",
+      usage: { input: 200, output: 100 },
+      costUsd: 0.9,
+    });
+    const entries = new Ledger(join(dir, "tokenomics", "ledger.jsonl")).entries();
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ provider: "anthropic", model: "opus", tokens_in: 200 });
+    // And the report entrypoint the NLQ tool uses sees the spend.
+    const report = svc.report(new URLSearchParams());
+    expect(report.total_cost_usd).toBeCloseTo(0.9, 5);
+  });
+
+  it("prefers modelUsage over internalDiagnostics when both are present", () => {
+    const svc = createTokenomicsService();
+    let usageEmit: ((event: unknown) => void) | undefined;
+    let diagUsed = false;
+    const ctx = {
+      stateDir: dir,
+      logger: { info() {}, debug() {}, error() {}, warn() {} },
+      modelUsage: {
+        onEvent: (cb: (event: unknown) => void) => {
+          usageEmit = cb;
+          return () => {};
+        },
+      },
+      internalDiagnostics: {
+        onEvent: () => {
+          diagUsed = true;
+          return () => {};
+        },
+      },
+    };
+    svc.service.start(ctx as never);
+    expect(usageEmit).toBeTypeOf("function");
+    expect(diagUsed).toBe(false);
+  });
+});
+
+describe("tokenomics_spend NLQ tool", () => {
+  it("toReportParams derives window bounds and honors explicit overrides", () => {
+    const now = Date.parse("2026-07-02T12:00:00.000Z");
+    const week = toReportParams({ window: "7d" }, now);
+    expect(week.get("until")).toBe(new Date(now).toISOString());
+    expect(Date.parse(week.get("since") ?? "")).toBe(now - 7 * 86_400_000);
+    // Explicit since wins over window; gran passes through.
+    const explicit = toReportParams(
+      { window: "7d", since: "2026-01-01", granularity: "week" },
+      now,
+    );
+    expect(explicit.get("since")).toBe("2026-01-01");
+    expect(explicit.get("gran")).toBe("week");
+  });
+
+  it("summarize renders a natural-language spend answer", () => {
+    const report = {
+      period: "custom",
+      since: "2026-06-01T00:00:00.000Z",
+      until: "2026-07-01T00:00:00.000Z",
+      days: 30,
+      bucket_gran: "day",
+      buckets: [],
+      by_model: [
+        {
+          model: "opus",
+          cost_usd: 3.5,
+          tokens: 1000,
+          tokens_in: 700,
+          tokens_out: 300,
+          calls: 4,
+          billed: true,
+          input_usd_per_mtok: 15,
+          output_usd_per_mtok: 75,
+        },
+        {
+          model: "free-local",
+          cost_usd: 0,
+          tokens: 3000,
+          tokens_in: 2000,
+          tokens_out: 1000,
+          calls: 6,
+          billed: false,
+          input_usd_per_mtok: 0,
+          output_usd_per_mtok: 0,
+        },
+      ],
+      total_cost_usd: 3.5,
+      total_tokens: 4000,
+      total_calls: 10,
+      free_tokens: 3000,
+      billed_tokens: 1000,
+      avoided_usd: 1.25,
+      counterfactual_usd: 4.75,
+      baseline_model: "opus",
+      baseline_usd_per_mtok: 15,
+    } satisfies Report;
+    const line = summarize(report);
+    expect(line).toContain("$3.50");
+    expect(line).toContain("10 calls");
+    expect(line).toContain("75% of tokens served free");
+    expect(line).toContain("opus $3.50");
+  });
+
+  it("execute returns a spend payload from the injected report entrypoint", async () => {
+    const now = Date.parse("2026-07-02T12:00:00.000Z");
+    let seen: URLSearchParams | undefined;
+    const fakeReport = (params: URLSearchParams): Report => {
+      seen = params;
+      return {
+        period: "custom",
+        since: "2026-06-25T12:00:00.000Z",
+        until: "2026-07-02T12:00:00.000Z",
+        days: 7,
+        bucket_gran: "day",
+        buckets: [],
+        by_model: [],
+        total_cost_usd: 12.34,
+        total_tokens: 5000,
+        total_calls: 20,
+        free_tokens: 0,
+        billed_tokens: 5000,
+        avoided_usd: 0,
+        counterfactual_usd: 12.34,
+        baseline_model: "opus",
+        baseline_usd_per_mtok: 15,
+      } satisfies Report;
+    };
+    const tool = createSpendTool(fakeReport, () => now);
+    const result = await tool.execute("call-1", { window: "7d" });
+    expect(seen?.get("since")).toBe(new Date(now - 7 * 86_400_000).toISOString());
+    const payload = result.details as {
+      total_cost_usd: number;
+      summary: string;
+      report_text: string;
+    };
+    expect(payload.total_cost_usd).toBe(12.34);
+    expect(payload.summary).toContain("$12.34");
+    expect(payload.report_text).toBeTypeOf("string");
   });
 });
